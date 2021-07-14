@@ -1,4 +1,6 @@
 """Utility functions for the HPA Cell Segmentation package."""
+from cucim.skimage import morphology as cmorphology
+import cupy as cp
 import os.path
 import urllib
 import zipfile
@@ -11,6 +13,26 @@ from skimage.morphology import (binary_erosion, closing, disk,
 
 HIGH_THRESHOLD = 0.4
 LOW_THRESHOLD = HIGH_THRESHOLD - 0.25
+
+from time import perf_counter
+import threading
+from contextlib import ContextDecorator
+import os
+import sys
+class Timer(ContextDecorator):
+    def __init__(self, message):
+        self.message = message
+        self.end = None
+    def elapsed_time(self):
+        self.end = perf_counter()
+        return self.end - self.start
+    def __enter__(self):
+        self.start = perf_counter()
+        return self
+    def __exit__(self, exc_type, exc, exc_tb):
+        if not self.end:
+            self.elapsed_time()
+        print("{} pid:{} tid:{} : {}".format(self.message, os.getpid(), threading.get_ident(), self.end - self.start), file=sys.stderr)
 
 
 def download_with_url(url_string, file_path, unzip=False):
@@ -110,25 +132,32 @@ def label_cell(nuclei_pred, cell_pred):
         threshold_adjustment=0.35,
         small_object_size_cutoff=10,
     ):
-        img_copy = np.copy(mask_img)
-        m = seeds * border_img  # * dt
-        img_copy[m <= threshold + threshold_adjustment] = 0
-        img_copy[m > threshold + threshold_adjustment] = 1
-        img_copy = img_copy.astype(np.bool)
-        img_copy = remove_small_objects(img_copy, small_object_size_cutoff).astype(
-            np.uint8
-        )
+        with Timer("wsh") as timer:
+            mask_img = cp.asarray(mask_img)
 
-        mask_img[mask_img <= threshold] = 0
-        mask_img[mask_img > threshold] = 1
-        mask_img = mask_img.astype(np.bool)
-        mask_img = remove_small_holes(mask_img, 1000)
-        mask_img = remove_small_objects(mask_img, 8).astype(np.uint8)
-        markers = ndi.label(img_copy, output=np.uint32)[0]
-        labeled_array = segmentation.watershed(
-            mask_img, markers, mask=mask_img, watershed_line=True
-        )
-        return labeled_array
+            img_copy = cp.copy(mask_img)
+            m = seeds * border_img  # * dt
+            img_copy[m <= threshold + threshold_adjustment] = 0
+            img_copy[m > threshold + threshold_adjustment] = 1
+            img_copy = img_copy.astype(cp.bool)
+            img_copy = cmorphology.remove_small_objects(img_copy, small_object_size_cutoff).astype(
+                cp.uint8
+            )
+
+            mask_img[mask_img <= threshold] = 0
+            mask_img[mask_img > threshold] = 1
+            mask_img = mask_img.astype(cp.bool)
+            mask_img = cmorphology.remove_small_holes(mask_img, 1000)
+            mask_img = cmorphology.remove_small_objects(mask_img, 8).astype(cp.uint8)
+            markers = ndi.label(img_copy.get(), output=cp.uint32)[0]
+            print(timer.elapsed_time())
+            mask_img = mask_img.get()
+            print(timer.elapsed_time())
+            labeled_array = segmentation.watershed(
+                mask_img, markers, mask=mask_img, watershed_line=True
+            )
+            print(timer.elapsed_time())
+            return labeled_array
 
     nuclei_label = __wsh(
         nuclei_pred[..., 2] / 255.0,

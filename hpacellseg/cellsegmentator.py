@@ -1,4 +1,6 @@
 """Package for loading and running the nuclei and cell segmentation models programmaticly."""
+from cucim import skimage as cskimage
+import cupy as cp
 import os
 import sys
 
